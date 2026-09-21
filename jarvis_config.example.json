@@ -1,0 +1,13 @@
+{
+  "assistant_name": "J.A.R.V.I.S.",
+  "audit_top_processes": 8,
+  "cleanup_allowlist": [
+    "example-background-app.exe"
+  ],
+  "home_aliases": {
+    "desk light": "light.office_desk",
+    "front door": "lock.front_door",
+    "movie mode": "scene.movie_mode"
+  }
+}
+

@@ -1,0 +1,13 @@
+SpeechRecognition>=3.10,<4
+# SpeechRecognition's native Microphone backend. PyAudio currently publishes
+# Windows wheels only through Python 3.13; sounddevice supplies the same default
+# microphone AudioSource contract on Python 3.14+ without compiling C++.
+PyAudio>=0.2.14; python_version < "3.14"
+sounddevice>=0.5.5,<0.6; python_version >= "3.14"
+pyttsx3>=2.90
+rapidfuzz>=3.0,<4
+psutil>=5.9,<8
+pywin32>=306; sys_platform == "win32"
+pycaw>=20251023; sys_platform == "win32"
+openai>=2.0,<3
+python-dotenv>=1.0,<2

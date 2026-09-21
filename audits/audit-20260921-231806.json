@@ -1,0 +1,64 @@
+{
+  "created_at": "2026-09-21T23:18:06.443481+05:30",
+  "computer": "DESKTOP-E3RJKMU",
+  "user": "Archit",
+  "os": "Windows-11-10.0.26200-SP0",
+  "boot_time": "2026-09-18T12:39:33.194486",
+  "cpu_percent": 16.4,
+  "memory": {
+    "percent": 88.8,
+    "available_gb": 1.74,
+    "total_gb": 15.52
+  },
+  "system_disk": {
+    "percent": 65.0,
+    "free_gb": 159.06,
+    "total_gb": 454.39
+  },
+  "battery": {
+    "percent": 86,
+    "plugged_in": true
+  },
+  "top_memory_processes": [
+    {
+      "pid": 25244,
+      "name": "msedge.exe",
+      "memory_percent": 4.42
+    },
+    {
+      "pid": 3456,
+      "name": "ChatGPT.exe",
+      "memory_percent": 4.27
+    },
+    {
+      "pid": 23312,
+      "name": "msedge.exe",
+      "memory_percent": 2.61
+    },
+    {
+      "pid": 24984,
+      "name": "msedge.exe",
+      "memory_percent": 2.36
+    },
+    {
+      "pid": 20720,
+      "name": "steamwebhelper.exe",
+      "memory_percent": 2.07
+    },
+    {
+      "pid": 6660,
+      "name": "explorer.exe",
+      "memory_percent": 1.98
+    },
+    {
+      "pid": 31540,
+      "name": "Antigravity IDE.exe",
+      "memory_percent": 1.8
+    },
+    {
+      "pid": 4012,
+      "name": "MemCompression",
+      "memory_percent": 1.74
+    }
+  ]
+}
