@@ -1,0 +1,64 @@
+{
+  "created_at": "2026-09-21T23:14:45.468070+05:30",
+  "computer": "DESKTOP-E3RJKMU",
+  "user": "Archit",
+  "os": "Windows-11-10.0.26200-SP0",
+  "boot_time": "2026-09-18T12:39:33.194433",
+  "cpu_percent": 24.1,
+  "memory": {
+    "percent": 91.8,
+    "available_gb": 1.28,
+    "total_gb": 15.52
+  },
+  "system_disk": {
+    "percent": 65.0,
+    "free_gb": 159.11,
+    "total_gb": 454.39
+  },
+  "battery": {
+    "percent": 83,
+    "plugged_in": true
+  },
+  "top_memory_processes": [
+    {
+      "pid": 3456,
+      "name": "ChatGPT.exe",
+      "memory_percent": 4.33
+    },
+    {
+      "pid": 25244,
+      "name": "msedge.exe",
+      "memory_percent": 4.11
+    },
+    {
+      "pid": 23312,
+      "name": "msedge.exe",
+      "memory_percent": 2.92
+    },
+    {
+      "pid": 31540,
+      "name": "Antigravity IDE.exe",
+      "memory_percent": 2.47
+    },
+    {
+      "pid": 24984,
+      "name": "msedge.exe",
+      "memory_percent": 2.43
+    },
+    {
+      "pid": 6660,
+      "name": "explorer.exe",
+      "memory_percent": 1.99
+    },
+    {
+      "pid": 39580,
+      "name": "msedge.exe",
+      "memory_percent": 1.72
+    },
+    {
+      "pid": 32484,
+      "name": "Antigravity IDE.exe",
+      "memory_percent": 1.69
+    }
+  ]
+}
