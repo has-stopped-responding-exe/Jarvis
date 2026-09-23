@@ -119,14 +119,17 @@ py .\main.py --ui
 The dashboard provides:
 
 - live voice-engine status and Start/Stop controls;
-- an animated listening core and typed command bar;
+- a cinematic tactical voice core with listening/thinking/speaking states;
+- a live bounded dialogue and confirmed-action ledger;
+- fullscreen HUD mode and a typed command bar;
 - searchable access to every locally discovered application;
 - system CPU, memory, disk, audit, and activity views;
 - Windows startup and microphone-enhancement status.
 
 Keyboard shortcuts: `Ctrl+L` focuses the command bar, `Ctrl+K` opens application
 search, `Ctrl+P` opens process cleanup, and `F5` refreshes the installed-app
-catalog. Closing the dashboard does not stop the background voice listener.
+catalog. `F11` toggles fullscreen HUD mode and `Escape` exits it. Closing the
+dashboard does not stop the background voice listener.
 
 The assistant starts after user sign-in, when Windows permits microphone access.
 It is silent by default. To enable TTS, add `JARVIS_TTS=1` to `.env`.

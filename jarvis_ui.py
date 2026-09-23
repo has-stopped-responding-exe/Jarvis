@@ -25,18 +25,18 @@ import psutil
 
 
 class Palette:
-    VOID = "#05090D"
-    SURFACE = "#091218"
-    SURFACE_2 = "#0D1A21"
-    SURFACE_3 = "#10252D"
-    LINE = "#1B3A43"
-    CYAN = "#53E6FF"
+    VOID = "#03070A"
+    SURFACE = "#071219"
+    SURFACE_2 = "#0A1820"
+    SURFACE_3 = "#0D242D"
+    LINE = "#173943"
+    CYAN = "#56E8FF"
     CYAN_SOFT = "#1C8192"
     MINT = "#73F7C8"
-    AMBER = "#FFCE6A"
-    RED = "#FF7B7B"
-    TEXT = "#EAFBFF"
-    MUTED = "#86A5AE"
+    AMBER = "#FFBE55"
+    RED = "#FF6B76"
+    TEXT = "#ECFBFF"
+    MUTED = "#71949E"
     DIM = "#4C6971"
 
 
@@ -56,6 +56,13 @@ class JarvisDesktopApp:
         self.active_view = "overview"
         self.engine_state = "offline"
         self.voice_state = "idle"
+        self.hud_phase = "booting"
+        self.boot_progress = 0.0
+        self.last_user_text = "Awaiting voice input."
+        self.last_assistant_text = "All local systems are standing by."
+        self.last_action_text = "No actions in this session."
+        self._runtime_log_offset: Optional[int] = None
+        self.fullscreen = False
         self.animation_phase = 0.0
         self._last_log_signature = ""
         self._busy = False
@@ -73,6 +80,7 @@ class JarvisDesktopApp:
         self.root.after(250, self._load_initial_state)
         self.root.after(900, self._refresh_metrics)
         self.root.after(1500, self._poll_engine)
+        self.root.after(700, self._poll_runtime_state)
         self.root.after(1800, self._refresh_activity)
 
     def _configure_window(self) -> None:
@@ -193,6 +201,10 @@ class JarvisDesktopApp:
 
         controls = tk.Frame(header, bg=self.colors.VOID)
         controls.grid(row=0, column=1, sticky="e")
+        self.fullscreen_button = self._button(
+            controls, "FULLSCREEN", self._toggle_fullscreen, compact=True
+        )
+        self.fullscreen_button.pack(side="left", padx=(0, 10))
         self.engine_badge = tk.Label(controls, text="●  OFFLINE", bg=self.colors.SURFACE_2, fg=self.colors.MUTED, font=self.font_label, padx=15, pady=10)
         self.engine_badge.pack(side="left", padx=(0, 10))
         self.engine_button = self._button(controls, "START JARVIS", self._toggle_engine, accent=True)
@@ -234,7 +246,7 @@ class JarvisDesktopApp:
 
         core_panel = self._panel(view)
         core_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        core_panel.grid_rowconfigure(1, weight=1)
+        core_panel.grid_rowconfigure(2, weight=1)
         core_panel.grid_columnconfigure(0, weight=1)
         cap = tk.Frame(core_panel, bg=self.colors.SURFACE)
         cap.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 0))
@@ -242,11 +254,46 @@ class JarvisDesktopApp:
         self.core_hint = tk.Label(cap, text="Say “Jarvis, open…”", bg=self.colors.SURFACE, fg=self.colors.MUTED, font=self.font_small)
         self.core_hint.pack(side="right")
 
+        telemetry = tk.Frame(core_panel, bg=self.colors.SURFACE)
+        telemetry.grid(row=1, column=0, sticky="ew", padx=16, pady=(10, 0))
+        self.hud_telemetry: dict[str, tk.Label] = {}
+        telemetry_values = (
+            ("MIC", "WASAPI / ENHANCED"),
+            ("MODEL", (self.jarvis.intelligence.provider or "LOCAL").upper()),
+            ("APPS", "SCANNING"),
+            ("CONTROL", "LOCAL / SAFE"),
+        )
+        for column, (key, value) in enumerate(telemetry_values):
+            cell = tk.Frame(
+                telemetry,
+                bg=self.colors.SURFACE_2,
+                highlightbackground=self.colors.LINE,
+                highlightthickness=1,
+            )
+            cell.grid(row=0, column=column, sticky="ew", padx=3)
+            telemetry.grid_columnconfigure(column, weight=1, uniform="telemetry")
+            tk.Label(
+                cell,
+                text=key,
+                bg=self.colors.SURFACE_2,
+                fg=self.colors.DIM,
+                font=self.font_label,
+            ).pack(pady=(6, 0))
+            value_label = tk.Label(
+                cell,
+                text=value,
+                bg=self.colors.SURFACE_2,
+                fg=self.colors.CYAN,
+                font=self.font_small,
+            )
+            value_label.pack(pady=(1, 6))
+            self.hud_telemetry[key] = value_label
+
         self.core_canvas = tk.Canvas(core_panel, bg=self.colors.SURFACE, highlightthickness=0, height=280)
-        self.core_canvas.grid(row=1, column=0, sticky="nsew", padx=12)
+        self.core_canvas.grid(row=2, column=0, sticky="nsew", padx=12)
 
         command = tk.Frame(core_panel, bg=self.colors.SURFACE_2, highlightbackground=self.colors.LINE, highlightthickness=1)
-        command.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 20))
+        command.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 20))
         tk.Label(command, text="⌘", bg=self.colors.SURFACE_2, fg=self.colors.CYAN, font=(self.ui_family, 17)).pack(side="left", padx=(14, 8))
         self.command_var = tk.StringVar()
         self.command_entry = tk.Entry(
@@ -290,24 +337,46 @@ class JarvisDesktopApp:
         audit.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         audit_top = tk.Frame(audit, bg=self.colors.SURFACE)
         audit_top.pack(fill="x", padx=18, pady=(15, 8))
-        tk.Label(audit_top, text="LAST RESPONSE", bg=self.colors.SURFACE, fg=self.colors.CYAN, font=self.font_label).pack(side="left")
+        tk.Label(audit_top, text="LIVE DIALOGUE", bg=self.colors.SURFACE, fg=self.colors.CYAN, font=self.font_label).pack(side="left")
         self.audit_button = self._button(audit_top, "RUN AUDIT", self._run_audit, compact=True)
         self.audit_button.pack(side="right")
         self.clean_button = self._button(
             audit_top, "CLEAN", self._clean_approved, compact=True
         )
         self.clean_button.pack(side="right", padx=(0, 7))
-        self.response_label = tk.Label(
+        self.user_line_label = tk.Label(
             audit,
-            text="Standing by. Your commands stay on this device unless intelligence is requested.",
+            text="YOU  /  Awaiting voice input.",
             bg=self.colors.SURFACE,
-            fg=self.colors.MUTED,
+            fg=self.colors.TEXT,
             font=self.font_body,
             justify="left",
             anchor="nw",
             wraplength=330,
         )
-        self.response_label.pack(fill="x", padx=18, pady=(4, 17))
+        self.user_line_label.pack(fill="x", padx=18, pady=(4, 7))
+        self.response_label = tk.Label(
+            audit,
+            text="JARVIS  /  All local systems are standing by.",
+            bg=self.colors.SURFACE,
+            fg=self.colors.CYAN,
+            font=self.font_body,
+            justify="left",
+            anchor="nw",
+            wraplength=330,
+        )
+        self.response_label.pack(fill="x", padx=18, pady=(0, 6))
+        self.action_line_label = tk.Label(
+            audit,
+            text="ACTION  /  No actions in this session.",
+            bg=self.colors.SURFACE,
+            fg=self.colors.MUTED,
+            font=self.font_small,
+            justify="left",
+            anchor="nw",
+            wraplength=330,
+        )
+        self.action_line_label.pack(fill="x", padx=18, pady=(0, 14))
 
         apps_panel = self._panel(side)
         apps_panel.grid(row=2, column=0, sticky="nsew")
@@ -527,6 +596,23 @@ class JarvisDesktopApp:
         self.root.bind("<Control-l>", self._focus_command)
         self.root.bind("<Control-p>", self._focus_processes)
         self.root.bind("<F5>", lambda _event: self._refresh_apps())
+        self.root.bind("<F11>", self._toggle_fullscreen)
+        self.root.bind("<Escape>", self._exit_fullscreen)
+
+    def _toggle_fullscreen(self, _event: Optional[tk.Event[Any]] = None) -> str:
+        self.fullscreen = not self.fullscreen
+        self.root.attributes("-fullscreen", self.fullscreen)
+        self.fullscreen_button.configure(
+            text="EXIT HUD" if self.fullscreen else "FULLSCREEN"
+        )
+        return "break"
+
+    def _exit_fullscreen(self, _event: Optional[tk.Event[Any]] = None) -> str:
+        if self.fullscreen:
+            self.fullscreen = False
+            self.root.attributes("-fullscreen", False)
+            self.fullscreen_button.configure(text="FULLSCREEN")
+        return "break"
 
     def _focus_search(self, _event: tk.Event[Any]) -> str:
         self._show_view("applications")
@@ -774,6 +860,9 @@ class JarvisDesktopApp:
         if re.search(r"https?://|www\.", text, flags=re.IGNORECASE):
             self._set_response("Web addresses are blocked. I only launch installed applications.", error=True)
             return
+        self.last_user_text = self._bounded_runtime_text(text, 180)
+        self.user_line_label.configure(text=f"YOU  /  {self.last_user_text}")
+        self.hud_phase = "thinking"
         self.command_var.set("")
         self._busy = True
         self.send_button.configure(state="disabled", text="WORKING")
@@ -881,6 +970,8 @@ class JarvisDesktopApp:
     def _update_engine_state(self) -> None:
         self.engine_state = "online" if self._engine_processes() else "offline"
         self.voice_state = "listening" if self.engine_state == "online" else "idle"
+        if self.hud_phase != "booting":
+            self.hud_phase = "listening" if self.engine_state == "online" else "standby"
         self._render_engine_state()
 
     def _poll_engine(self) -> None:
@@ -900,6 +991,11 @@ class JarvisDesktopApp:
             text="STOP JARVIS" if online else "PLEASE WAIT" if transitioning else "START JARVIS",
             state="disabled" if transitioning else "normal",
         )
+        if hasattr(self, "hud_telemetry"):
+            self.hud_telemetry["CONTROL"].configure(
+                text="LOCAL / ONLINE" if online else "LOCAL / STANDBY",
+                fg=self.colors.MINT if online else self.colors.AMBER,
+            )
 
     def _refresh_metrics(self) -> None:
         try:
@@ -915,32 +1011,192 @@ class JarvisDesktopApp:
         self.root.after(2200, self._refresh_metrics)
 
     def _animate_core(self) -> None:
+        if self.root.state() == "iconic":
+            self.root.after(250, self._animate_core)
+            return
         canvas = self.core_canvas
         width = max(1, canvas.winfo_width())
         height = max(1, canvas.winfo_height())
         canvas.delete("core")
-        cx, cy = width / 2, height / 2 - 4
-        radius = min(width, height) * 0.23
-        active = self.engine_state == "online"
-        thinking = self.voice_state == "thinking"
-        self.animation_phase += 0.10 if active else 0.025
+        cx, cy = width / 2, height / 2 - 5
+        radius = min(width, height) * 0.245
 
+        if self.hud_phase == "booting":
+            self.boot_progress = min(100.0, self.boot_progress + 2.4)
+            if self.boot_progress >= 100.0:
+                self.hud_phase = (
+                    "listening" if self.engine_state == "online" else "standby"
+                )
+        phase = self.hud_phase
+        colors = {
+            "booting": self.colors.AMBER,
+            "standby": self.colors.DIM,
+            "listening": self.colors.CYAN,
+            "thinking": self.colors.AMBER,
+            "speaking": self.colors.MINT,
+            "alert": self.colors.RED,
+        }
+        arc_color = colors.get(phase, self.colors.CYAN)
+        speed = {
+            "booting": 0.18,
+            "standby": 0.025,
+            "listening": 0.10,
+            "thinking": 0.22,
+            "speaking": 0.14,
+            "alert": 0.06,
+        }.get(phase, 0.08)
+        self.animation_phase += speed
+
+        # Sparse tactical field: functional depth without obscuring controls.
+        for gx in range(22, int(width), 42):
+            for gy in range(18, int(height), 42):
+                if (gx + gy) % 84 == 0:
+                    canvas.create_oval(
+                        gx - 1,
+                        gy - 1,
+                        gx + 1,
+                        gy + 1,
+                        fill=self.colors.LINE,
+                        outline="",
+                        tags="core",
+                    )
+        canvas.create_line(
+            18, cy, cx - radius - 56, cy, fill=self.colors.LINE, tags="core"
+        )
+        canvas.create_line(
+            cx + radius + 56, cy, width - 18, cy, fill=self.colors.LINE, tags="core"
+        )
+        canvas.create_line(
+            cx, 14, cx, cy - radius - 48, fill=self.colors.LINE, tags="core"
+        )
+
+        pulse = math.sin(self.animation_phase * 2.0)
         for ring in range(4):
-            spread = radius + ring * 15 + math.sin(self.animation_phase + ring) * (4 if active else 1)
-            color = self.colors.CYAN_SOFT if ring < 2 else self.colors.LINE
-            canvas.create_oval(cx - spread, cy - spread, cx + spread, cy + spread, outline=color, width=2 if ring == 0 else 1, tags="core")
-        arc_color = self.colors.AMBER if thinking else self.colors.CYAN if active else self.colors.DIM
-        for offset in (0, 120, 240):
-            canvas.create_arc(cx - radius - 28, cy - radius - 28, cx + radius + 28, cy + radius + 28, start=(self.animation_phase * 55 + offset) % 360, extent=58, style="arc", outline=arc_color, width=3, tags="core")
+            spread = radius + ring * 13 + pulse * (2.5 if phase != "standby" else 0.7)
+            canvas.create_oval(
+                cx - spread,
+                cy - spread,
+                cx + spread,
+                cy + spread,
+                outline=self.colors.CYAN_SOFT if ring < 2 else self.colors.LINE,
+                width=2 if ring == 0 else 1,
+                tags="core",
+            )
 
-        for index in range(22):
-            x = cx - 112 + index * 10.5
-            amplitude = (16 + 13 * math.sin(index * 0.77 + self.animation_phase * 3)) if active else 5
-            canvas.create_line(x, cy - amplitude / 2, x, cy + amplitude / 2, fill=arc_color, width=2, tags="core")
-        state_text = "THINKING" if thinking else "LISTENING" if active else "STANDBY"
-        canvas.create_text(cx, cy + radius + 58, text=state_text, fill=arc_color, font=self.font_label, tags="core")
-        canvas.create_text(cx, cy + radius + 78, text="VOICE CHANNEL SECURE", fill=self.colors.MUTED, font=self.font_small, tags="core")
-        self.root.after(50 if active else 100, self._animate_core)
+        # Radial calibration ticks give the core instrument-like precision.
+        tick_radius = radius + 38
+        for index in range(48):
+            angle = math.radians(index * 7.5)
+            length = 9 if index % 4 == 0 else 4
+            x1 = cx + math.cos(angle) * (tick_radius - length)
+            y1 = cy + math.sin(angle) * (tick_radius - length)
+            x2 = cx + math.cos(angle) * tick_radius
+            y2 = cy + math.sin(angle) * tick_radius
+            canvas.create_line(
+                x1,
+                y1,
+                x2,
+                y2,
+                fill=arc_color if index % 4 == 0 else self.colors.LINE,
+                width=1,
+                tags="core",
+            )
+
+        arc_specs = ((radius + 23, 44, 3, 1), (radius + 9, 74, 2, -1), (radius - 8, 33, 2, 1))
+        for ring_radius, extent, line_width, direction in arc_specs:
+            for offset in (0, 120, 240):
+                start = (self.animation_phase * 68 * direction + offset) % 360
+                canvas.create_arc(
+                    cx - ring_radius,
+                    cy - ring_radius,
+                    cx + ring_radius,
+                    cy + ring_radius,
+                    start=start,
+                    extent=extent,
+                    style="arc",
+                    outline=arc_color,
+                    width=line_width,
+                    tags="core",
+                )
+
+        inner = radius * 0.70
+        points: list[float] = []
+        for index in range(12):
+            angle = math.radians(index * 30 - 90)
+            local_radius = inner * (1.0 if index % 2 == 0 else 0.91)
+            points.extend(
+                (cx + math.cos(angle) * local_radius, cy + math.sin(angle) * local_radius)
+            )
+        canvas.create_polygon(
+            points,
+            outline=self.colors.CYAN_SOFT,
+            fill=self.colors.SURFACE_2,
+            width=1,
+            tags="core",
+        )
+
+        amplitude_scale = {
+            "standby": 0.15,
+            "booting": 0.35,
+            "listening": 0.75,
+            "thinking": 0.52,
+            "speaking": 1.0,
+            "alert": 0.28,
+        }.get(phase, 0.5)
+        for index in range(25):
+            x = cx - 108 + index * 9
+            wave = abs(math.sin(index * 0.71 + self.animation_phase * 3.2))
+            amplitude = 4 + 28 * wave * amplitude_scale
+            canvas.create_line(
+                x,
+                cy - amplitude / 2,
+                x,
+                cy + amplitude / 2,
+                fill=arc_color,
+                width=2,
+                tags="core",
+            )
+
+        state_text = (
+            f"INITIALIZING {self.boot_progress:03.0f}%"
+            if phase == "booting"
+            else phase.upper()
+        )
+        canvas.create_text(
+            cx,
+            cy + radius + 62,
+            text=state_text,
+            fill=arc_color,
+            font=self.font_label,
+            tags="core",
+        )
+        canvas.create_text(
+            cx,
+            cy + radius + 80,
+            text="TACTICAL VOICE CORE  /  CHANNEL SECURE",
+            fill=self.colors.MUTED,
+            font=self.font_small,
+            tags="core",
+        )
+        canvas.create_text(
+            22,
+            22,
+            text="CORE 01  /  LOCAL MATRIX",
+            anchor="w",
+            fill=self.colors.DIM,
+            font=self.font_label,
+            tags="core",
+        )
+        canvas.create_text(
+            width - 22,
+            height - 18,
+            text=time.strftime("%H:%M:%S"),
+            anchor="e",
+            fill=self.colors.DIM,
+            font=self.font_mono,
+            tags="core",
+        )
+        self.root.after(50, self._animate_core)
 
     def _detect_microphone(self) -> None:
         preference = self.backend.MICROPHONE_PREFERENCE
@@ -954,6 +1210,77 @@ class JarvisDesktopApp:
     def _startup_worker(self, function: Any) -> None:
         success, message = function()
         self.events.put(("response", (message, not success)))
+
+    @staticmethod
+    def _bounded_runtime_text(value: str, limit: int) -> str:
+        cleaned = re.sub(r"[\x00-\x08\x0B-\x1F\x7F]", "", value)
+        cleaned = " ".join(cleaned.split()).strip()
+        return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
+
+    def _poll_runtime_state(self) -> None:
+        """Translate bounded known-prefix log events into live HUD state."""
+
+        path = self.workspace / "jarvis.log"
+        try:
+            size = path.stat().st_size
+            if self._runtime_log_offset is None:
+                start = max(0, size - 16_000)
+            elif size < self._runtime_log_offset:
+                start = 0
+            else:
+                start = self._runtime_log_offset
+            with path.open("rb") as handle:
+                handle.seek(start)
+                payload = handle.read(min(32_000, max(0, size - start)))
+                self._runtime_log_offset = handle.tell()
+            for raw_line in payload.decode("utf-8", errors="replace").splitlines():
+                line = self._bounded_runtime_text(raw_line, 700)
+                if line.startswith("[heard] "):
+                    self.last_user_text = self._bounded_runtime_text(
+                        line.removeprefix("[heard] "), 180
+                    )
+                    if self.hud_phase != "booting":
+                        self.hud_phase = "thinking"
+                        self.voice_state = "thinking"
+                elif line.startswith("J.A.R.V.I.S.: "):
+                    self.last_assistant_text = self._bounded_runtime_text(
+                        line.removeprefix("J.A.R.V.I.S.: "), 360
+                    )
+                    if self.hud_phase != "booting":
+                        self.hud_phase = "speaking"
+                        self.voice_state = "speaking"
+                elif line == "Listening...":
+                    if self.hud_phase != "booting":
+                        self.hud_phase = "listening"
+                        self.voice_state = "listening"
+                elif line.startswith("[automation] "):
+                    self.last_action_text = self._bounded_runtime_text(
+                        line.removeprefix("[automation] "), 160
+                    )
+                elif line.startswith("[launch] Successfully"):
+                    self.last_action_text = "Local application launch confirmed."
+                elif line.startswith("[close] "):
+                    self.last_action_text = self._bounded_runtime_text(
+                        line.removeprefix("[close] "), 160
+                    )
+                elif "provider error" in line.casefold() or "speech output failed" in line.casefold():
+                    if self.hud_phase != "booting":
+                        self.hud_phase = "alert"
+            self.user_line_label.configure(text=f"YOU  /  {self.last_user_text}")
+            self.response_label.configure(
+                text=f"JARVIS  /  {self.last_assistant_text}",
+                fg=(
+                    self.colors.RED
+                    if self.hud_phase == "alert"
+                    else self.colors.CYAN
+                ),
+            )
+            self.action_line_label.configure(
+                text=f"ACTION  /  {self.last_action_text}"
+            )
+        except OSError:
+            pass
+        self.root.after(650, self._poll_runtime_state)
 
     def _refresh_activity(self) -> None:
         path = self.workspace / "jarvis.log"
@@ -981,7 +1308,13 @@ class JarvisDesktopApp:
         compact = " ".join(str(message).split())
         if len(compact) > 330:
             compact = compact[:327].rstrip() + "…"
-        self.response_label.configure(text=compact, fg=self.colors.RED if error else self.colors.MUTED)
+        self.last_assistant_text = compact
+        if self.hud_phase != "booting":
+            self.hud_phase = "alert" if error else "speaking"
+        self.response_label.configure(
+            text=f"JARVIS  /  {compact}",
+            fg=self.colors.RED if error else self.colors.CYAN,
+        )
 
     def _drain_events(self) -> None:
         while True:
@@ -992,6 +1325,9 @@ class JarvisDesktopApp:
             if kind == "apps":
                 self.apps = dict(payload)
                 self.app_count_label.configure(text=f"{len(self.apps)} LOCAL APPS")
+                self.hud_telemetry["APPS"].configure(
+                    text=f"{len(self.apps)} / LOCAL", fg=self.colors.MINT
+                )
                 self._filter_apps()
                 self._render_quick_apps()
                 self._busy = False
@@ -1012,6 +1348,8 @@ class JarvisDesktopApp:
                 self._set_response(str(payload))
             elif kind == "voice":
                 self.voice_state = str(payload)
+                phase = str(payload)
+                self.hud_phase = "standby" if phase == "idle" else phase
             elif kind == "response":
                 message, error = payload
                 self._set_response(str(message), error=bool(error))
@@ -1019,6 +1357,9 @@ class JarvisDesktopApp:
                 self._busy = False
                 self.send_button.configure(state="normal", text="EXECUTE")
                 self.voice_state = "listening" if self.engine_state == "online" else "idle"
+                self.hud_phase = (
+                    "listening" if self.engine_state == "online" else "standby"
+                )
             elif kind == "audit_done":
                 self._busy = False
                 self.audit_button.configure(state="normal", text="RUN AUDIT")
@@ -1037,6 +1378,7 @@ class JarvisDesktopApp:
             elif kind == "engine":
                 self.engine_state = str(payload)
                 self.voice_state = "listening" if payload == "online" else "idle"
+                self.hud_phase = "listening" if payload == "online" else "standby"
                 self._render_engine_state()
             elif kind == "error":
                 self._busy = False

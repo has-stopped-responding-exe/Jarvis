@@ -191,3 +191,67 @@ inventory refresh -> grouped current-user processes -> approve/remove -> atomic 
 voice cleanup -> reload allowlist -> audit fresh processes -> protected/user checks
               -> graceful terminate -> bounded wait -> report -> UI refresh
 ```
+
+---
+
+## Cinematic Tactical Interface Addendum
+
+### Intent & Motion Personality
+
+Create an original cinematic AI command surface inspired by advanced fictional tactical systems without copying Marvel marks, suit graphics, dialogue, or actor likeness. Motion personality: **Pulse** — 200–400 ms state changes, rhythmic scanner sweeps, and restrained illumination tied to actual assistant state.
+
+### Multi-Path Trade-Off Matrix
+
+| Path | Description | Fidelity | Performance | Accessibility | Integration | Maintainability | Total |
+|---|---|---:|---:|---:|---:|---:|---:|
+| A — Cosmetic | Recolor existing panels and add more rings | 2 | 5 | 4 | 5 | 5 | 21 |
+| B — Tactical native HUD | Stateful reactor core, radial telemetry, live dialogue feed, boot choreography, full-screen mode | 5 | 4 | 4 | 5 | 4 | **22** |
+| C — 3D web shell | WebGL/WebGPU holographic scene with Python bridge | 5 | 2 | 3 | 2 | 2 | 14 |
+
+Decision: **Path B**. It preserves the fast native Python runtime while adding meaningful cinematic behavior connected to real listening, thinking, speaking, and action states.
+
+### Defensive Threat Model — Exactly Three Failure Scenarios
+
+1. **Animation starves the Tk event loop** — reuse canvas items where practical, cap Pulse animation at 20 FPS, suspend decorative work while minimized, and keep all backend work threaded.
+2. **Log-derived dialogue displays malformed or secret content** — parse only known `[heard]` and `J.A.R.V.I.S.:` prefixes, bound text length, strip control characters, and never display environment/config values.
+3. **Fullscreen HUD traps keyboard users** — bind `F11` to toggle and `Escape` to exit fullscreen, preserve visible focus, and keep every action available through standard buttons.
+
+### Split-Brain Review
+
+- **Architect:** a central reactor core communicates assistant state; a telemetry rail and dialogue ledger provide operational context without card clutter.
+- **SRE Breaker:** the interface must remain useful with animation disabled, with an empty log, or while the model provider is offline.
+- **Synthesizer:** connect every glow and status change to real system state; decorative motion never implies an action succeeded.
+
+### Strict Interface Contracts
+
+```text
+HudState {
+  phase: "booting" | "standby" | "listening" | "thinking" | "speaking" | "alert",
+  last_user: str <= 180 chars,
+  last_assistant: str <= 360 chars,
+  last_action: str <= 160 chars,
+  provider_online: bool,
+  engine_online: bool
+}
+
+parse_runtime_tail(text: str, previous: HudState) -> HudState
+toggle_fullscreen() -> bool
+```
+
+State lifecycle:
+
+```text
+booting -> engine probe -> standby|listening
+listening -> heard transcript -> thinking
+thinking -> assistant/action output -> speaking
+speaking -> next listen cycle -> listening
+any state -> runtime/provider failure -> alert -> listening|standby after recovery
+```
+
+### Visual Tokens
+
+- Reactor cyan: high-luminance cool cyan reserved for active state and focus.
+- Diagnostic amber: warnings, elevated system load, and pending transitions.
+- Deep graphite: layered near-black fields with subtle blue-green separation.
+- Typography: Segoe UI Variable Display + Cascadia Mono, both local and zero-latency.
+- Reward moments: boot convergence, command acceptance pulse, successful action sweep.
