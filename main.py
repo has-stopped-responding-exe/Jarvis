@@ -8,6 +8,7 @@ no URL or web-search fallback.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -15,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import time
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -59,14 +61,18 @@ except ImportError:
 
 
 OS_NAME = platform.system()  # Detect once: "Windows", "Linux", or "Darwin".
-CACHE_VERSION = 2  # v2 includes Windows Start/Store/system application identities.
+CACHE_VERSION = 3  # v3 adds Desktop shortcuts and registered Windows App Paths.
 CACHE_FILE = Path(__file__).resolve().with_name("app_cache.json")
 MATCH_THRESHOLD = 64.0
 IMPLICIT_MATCH_THRESHOLD = 82.0
 AMBIGUITY_MARGIN = 5.0
 AMBIENT_CALIBRATION_SECONDS = 0.45
 RECOGNITION_LANGUAGE = os.environ.get("VOICELAUNCH_LANGUAGE", "en-IN")
+APP_RECOGNITION_LANGUAGE = os.environ.get(
+    "VOICELAUNCH_APP_LANGUAGE", "en-US"
+)
 MICROPHONE_PREFERENCE = os.environ.get("JARVIS_MICROPHONE", "").strip()
+ENHANCE_MIC_AUDIO = os.environ.get("JARVIS_ENHANCE_MIC", "1") == "1"
 TTS_VOLUME = 1.0  # pyttsx3 range: 0.0 to 1.0
 TTS_RATE = 190
 TTS_ENABLED = os.environ.get("JARVIS_TTS", "0") == "1"
@@ -183,7 +189,38 @@ def _create_microphone() -> object:
         for index, device in enumerate(devices)
         if int(device["max_input_channels"]) > 0
     ]
-    return SoundDeviceMicrophone(device=_preferred_microphone_index(names))
+    selected = _preferred_microphone_index(names)
+    if selected is None and not MICROPHONE_PREFERENCE and OS_NAME == "Windows":
+        # sounddevice's global default commonly resolves to legacy MME. Prefer
+        # the matching WASAPI endpoint for lower latency and a cleaner capture
+        # path while keeping the same physical Windows default microphone.
+        try:
+            default_index = int(sd.default.device[0])
+            default_name = str(devices[default_index]["name"]).casefold()
+            host_apis = sd.query_hostapis()
+            for index, device in enumerate(devices):
+                host_name = str(host_apis[int(device["hostapi"])]["name"])
+                if (
+                    int(device["max_input_channels"]) > 0
+                    and str(device["name"]).casefold() == default_name
+                    and "WASAPI" in host_name
+                ):
+                    sample_rate = int(device["default_samplerate"])
+                    sd.check_input_settings(
+                        device=index,
+                        channels=1,
+                        dtype="int16",
+                        samplerate=sample_rate,
+                    )
+                    selected = index
+                    print(
+                        f"[audio] Using low-latency WASAPI microphone: "
+                        f"{device['name']} (device {index})"
+                    )
+                    break
+        except (IndexError, KeyError, TypeError, ValueError, sd.PortAudioError) as exc:
+            print(f"[audio] WASAPI selection unavailable; using default input: {exc}")
+    return SoundDeviceMicrophone(device=selected)
 
 
 @dataclass(frozen=True)
@@ -233,6 +270,15 @@ def _scan_windows() -> AppList:
         roots.append(Path(app_data) / "Microsoft/Windows/Start Menu/Programs")
     if program_data:
         roots.append(Path(program_data) / "Microsoft/Windows/Start Menu/Programs")
+    user_profile = os.environ.get("USERPROFILE")
+    public_profile = os.environ.get("PUBLIC")
+    one_drive = os.environ.get("OneDrive")
+    if user_profile:
+        roots.append(Path(user_profile) / "Desktop")
+    if public_profile:
+        roots.append(Path(public_profile) / "Desktop")
+    if one_drive:
+        roots.append(Path(one_drive) / "Desktop")
 
     for root in roots:
         if not root.is_dir():
@@ -273,6 +319,31 @@ def _scan_windows() -> AppList:
                             continue
     except (ImportError, OSError) as exc:
         print(f"[scan] Registry scan skipped: {exc}")
+
+    # App Paths is Windows' executable registration mechanism. Programs can be
+    # launchable from Run even when they have no Start Menu shortcut or usable
+    # uninstall icon, so include every existing executable registered here.
+    try:
+        import winreg
+
+        app_paths_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                key = winreg.OpenKey(hive, app_paths_key)
+            except OSError:
+                continue
+            with key:
+                for index in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        subkey_name = winreg.EnumKey(key, index)
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            executable = Path(str(winreg.QueryValueEx(subkey, None)[0]))
+                        if executable.is_file() and executable.suffix.casefold() == ".exe":
+                            _add_app(apps, executable.stem, str(executable))
+                    except OSError:
+                        continue
+    except (ImportError, OSError) as exc:
+        print(f"[scan] App Paths scan skipped: {exc}")
 
     # Get-StartApps is Windows' registered launch catalog. Unlike filesystem
     # shortcut scanning, it includes packaged Microsoft Store apps and built-in
@@ -561,6 +632,92 @@ def adjust_system_volume(
         return None
 
 
+def _enhance_speech_audio(audio: "sr.AudioData") -> "sr.AudioData":
+    """Remove low-frequency rumble and safely normalize 16-bit microphone PCM."""
+
+    if not ENHANCE_MIC_AUDIO or sr is None or audio.sample_width != 2:
+        return audio
+    samples = array("h")
+    samples.frombytes(audio.frame_data)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if len(samples) < 2:
+        return audio
+
+    # A one-pole 80 Hz high-pass removes fan/desk rumble and DC offset without
+    # cutting the speech band. Normalize quiet microphones but never amplify
+    # more than 3x, which avoids turning room noise into clipping.
+    cutoff_hz = 80.0
+    dt = 1.0 / float(audio.sample_rate)
+    rc = 1.0 / (2.0 * math.pi * cutoff_hz)
+    alpha = rc / (rc + dt)
+    filtered = array("h")
+    previous_input = int(samples[0])
+    previous_output = 0.0
+    square_sum = 0.0
+    peak = 1
+    for raw_sample in samples:
+        current = int(raw_sample)
+        output = alpha * (previous_output + current - previous_input)
+        previous_input = current
+        previous_output = output
+        value = max(-32768, min(32767, int(output)))
+        filtered.append(value)
+        square_sum += float(value * value)
+        peak = max(peak, abs(value))
+
+    rms = math.sqrt(square_sum / len(filtered))
+    if rms < 1.0:
+        return audio
+    gain = min(3.0, 3500.0 / rms, 30000.0 / peak)
+    if gain > 1.02:
+        for index, value in enumerate(filtered):
+            filtered[index] = max(-32768, min(32767, int(value * gain)))
+    if sys.byteorder != "little":
+        filtered.byteswap()
+    print(f"[audio] Voice enhancement: RMS {rms:.0f}, gain {gain:.2f}x")
+    return sr.AudioData(filtered.tobytes(), audio.sample_rate, audio.sample_width)
+
+
+def _app_command_score(text: Optional[str], app_list: Optional[AppList]) -> float:
+    """Return the best installed-app score for an explicit spoken command."""
+
+    if not text or not app_list:
+        return 100.0
+    normalised = _normalise(_strip_wake_word(text))
+    if not re.search(
+        r"\b(?:open|launch|start|run|close|quit|switch)\b", normalised
+    ):
+        return 100.0
+    _, target = parse_intent(normalised, app_list)
+    if not target:
+        return 100.0
+    candidate = match_app(target, app_list, minimum_score=0.0)
+    return candidate.scores[0][1] if candidate.scores else 0.0
+
+
+def _merge_google_alternatives(primary: object, fallback: object) -> object:
+    """Merge unique Google transcript alternatives from two language models."""
+
+    combined: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for response in (primary, fallback):
+        if not isinstance(response, dict):
+            continue
+        alternatives = response.get("alternative", [])
+        if not isinstance(alternatives, list):
+            continue
+        for item in alternatives:
+            if not isinstance(item, dict):
+                continue
+            transcript = str(item.get("transcript", "")).strip()
+            key = transcript.casefold()
+            if transcript and key not in seen:
+                seen.add(key)
+                combined.append(item)
+    return {"alternative": combined}
+
+
 def _select_google_transcript(
     recognition: object, app_list: Optional[AppList]
 ) -> Optional[str]:
@@ -670,10 +827,28 @@ def listen_for_command(
                 source, timeout=timeout, phrase_time_limit=phrase_time_limit
             )
         print("[audio] Recognizing speech...")
+        audio = _enhance_speech_audio(audio)
         recognition = recognizer.recognize_google(
             audio, language=RECOGNITION_LANGUAGE, show_all=True
         )
         text = _select_google_transcript(recognition, app_list)
+        if (
+            app_list
+            and APP_RECOGNITION_LANGUAGE.casefold()
+            != RECOGNITION_LANGUAGE.casefold()
+            and _app_command_score(text, app_list) < MATCH_THRESHOLD
+        ):
+            print(
+                "[audio] Retrying unclear app name with "
+                f"{APP_RECOGNITION_LANGUAGE} recognition..."
+            )
+            fallback = recognizer.recognize_google(
+                audio,
+                language=APP_RECOGNITION_LANGUAGE,
+                show_all=True,
+            )
+            recognition = _merge_google_alternatives(recognition, fallback)
+            text = _select_google_transcript(recognition, app_list)
         if not text:
             raise sr.UnknownValueError()
         print(f"[heard] {text}")
@@ -1071,6 +1246,18 @@ def _strip_wake_word(text: str) -> str:
     ).strip()
 
 
+def _has_wake_word(text: str) -> bool:
+    """Return whether speech explicitly addresses the assistant."""
+
+    return bool(
+        re.match(
+            r"^\s*(?:hey\s+)?(?:jarvis|voice\s*launch|voicelaunch)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _handle_conversation(text: str) -> bool:
     """Handle a small local conversational layer without web fallbacks."""
 
@@ -1201,6 +1388,7 @@ def main() -> None:
         )
         if not text:
             continue
+        addressed_to_jarvis = _has_wake_word(text)
         text = _strip_wake_word(text)
         normalised = _normalise(text)
 
@@ -1268,7 +1456,11 @@ def main() -> None:
             target,
             apps,
             minimum_score=(
-                MATCH_THRESHOLD if explicit_app_action else IMPLICIT_MATCH_THRESHOLD
+                MATCH_THRESHOLD
+                if explicit_app_action
+                else IMPLICIT_MATCH_THRESHOLD
+                if addressed_to_jarvis
+                else 101.0
             ),
         )
         print(f"[match] candidates={result.scores}")
