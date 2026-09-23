@@ -66,6 +66,7 @@ IMPLICIT_MATCH_THRESHOLD = 82.0
 AMBIGUITY_MARGIN = 5.0
 AMBIENT_CALIBRATION_SECONDS = 0.45
 RECOGNITION_LANGUAGE = os.environ.get("VOICELAUNCH_LANGUAGE", "en-IN")
+MICROPHONE_PREFERENCE = os.environ.get("JARVIS_MICROPHONE", "").strip()
 TTS_VOLUME = 1.0  # pyttsx3 range: 0.0 to 1.0
 TTS_RATE = 190
 TTS_ENABLED = os.environ.get("JARVIS_TTS", "0") == "1"
@@ -102,18 +103,24 @@ class _SoundDeviceStreamAdapter:
 
 
 class SoundDeviceMicrophone(sr.AudioSource if sr is not None else object):
-    """SpeechRecognition AudioSource using the default sounddevice microphone.
+    """SpeechRecognition AudioSource using a selected sounddevice microphone.
 
     This is the Python 3.14-compatible fallback for platforms where PyAudio has
     no prebuilt wheel. Recognizer.adjust_for_ambient_noise() and
     Recognizer.listen() consume it exactly like sr.Microphone.
     """
 
-    def __init__(self, sample_rate: Optional[int] = None, chunk_size: int = 1024):
+    def __init__(
+        self,
+        sample_rate: Optional[int] = None,
+        chunk_size: int = 1024,
+        device: Optional[int] = None,
+    ):
         if sr is None or sd is None:
             raise RuntimeError("SpeechRecognition and sounddevice are required")
+        self.device = device
         if sample_rate is None:
-            device_info = sd.query_devices(kind="input")
+            device_info = sd.query_devices(device=device, kind="input")
             sample_rate = int(device_info["default_samplerate"])
         self.SAMPLE_RATE = sample_rate
         self.SAMPLE_WIDTH = 2  # signed 16-bit PCM
@@ -127,7 +134,7 @@ class SoundDeviceMicrophone(sr.AudioSource if sr is not None else object):
         self._raw_stream = sd.RawInputStream(
             samplerate=self.SAMPLE_RATE,
             blocksize=self.CHUNK,
-            device=None,  # None selects the operating system's default microphone.
+            device=self.device,
             channels=1,
             dtype="int16",
         )
@@ -141,6 +148,42 @@ class SoundDeviceMicrophone(sr.AudioSource if sr is not None else object):
             self._raw_stream.close()
         self.stream = None
         self._raw_stream = None
+
+
+def _preferred_microphone_index(names: Iterable[tuple[int, str]]) -> Optional[int]:
+    """Return the best input-device index for JARVIS_MICROPHONE."""
+
+    if not MICROPHONE_PREFERENCE:
+        return None
+    preference = MICROPHONE_PREFERENCE.casefold()
+    candidates = [(index, name) for index, name in names if preference in name.casefold()]
+    if not candidates:
+        print(
+            f"[audio] Preferred microphone {MICROPHONE_PREFERENCE!r} was not found; "
+            "using the Windows default input."
+        )
+        return None
+    exact = [item for item in candidates if item[1].casefold() == preference]
+    selected = (exact or candidates)[0]
+    print(f"[audio] Selected microphone: {selected[1]} (device {selected[0]})")
+    return selected[0]
+
+
+def _create_microphone() -> object:
+    """Create the configured microphone source for either PortAudio backend."""
+
+    if pyaudio is not None:
+        names = list(enumerate(sr.Microphone.list_microphone_names()))
+        return sr.Microphone(device_index=_preferred_microphone_index(names))
+    if sd is None:
+        raise RuntimeError("No supported microphone backend is installed")
+    devices = sd.query_devices()
+    names = [
+        (index, str(device["name"]))
+        for index, device in enumerate(devices)
+        if int(device["max_input_channels"]) > 0
+    ]
+    return SoundDeviceMicrophone(device=_preferred_microphone_index(names))
 
 
 @dataclass(frozen=True)
@@ -534,9 +577,7 @@ def listen_for_command(
     try:
         if audio_source is None:
             # Preserve standalone function use by opening a temporary source.
-            microphone = (
-                sr.Microphone() if pyaudio is not None else SoundDeviceMicrophone()
-            )
+            microphone = _create_microphone()
             backend = "PyAudio" if pyaudio is not None else "sounddevice"
             with microphone as source:
                 print(f"[audio] Using {backend} with the default microphone.")
@@ -1078,7 +1119,7 @@ def main() -> None:
 
     # Keep one microphone stream open for the entire session. Reopening the
     # PortAudio device for every short command added avoidable local latency.
-    microphone = sr.Microphone() if pyaudio is not None else SoundDeviceMicrophone()
+    microphone = _create_microphone()
     audio_source = microphone.__enter__()
     backend = "PyAudio" if pyaudio is not None else "sounddevice"
     print(f"[audio] Persistent {backend} microphone stream opened.")

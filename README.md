@@ -46,6 +46,29 @@ JARVIS_MODEL=provider/model-name
 
 Never paste keys into Python source files or commit `.env`.
 
+## MicYou enhanced microphone
+
+[MicYou](https://github.com/LanRhyme/MicYou) can stream an Android phone's
+microphone to Windows and apply noise suppression, echo cancellation,
+equalization, automatic gain control, and other DSP. On Windows it routes the
+processed audio through VB-CABLE:
+
+1. Install the official MicYou desktop and Android releases.
+2. Let MicYou install/detect VB-CABLE, then stream from the phone over Wi-Fi or
+   USB.
+3. In MicYou, select `CABLE Input (VB-Audio Virtual Cable)` as its output.
+4. In games and calling apps, select `CABLE Output (VB-Audio Virtual Cable)` as
+   the microphone.
+5. To make J.A.R.V.I.S. use the same enhanced feed, add this to `.env`:
+
+```dotenv
+JARVIS_MICROPHONE=CABLE Output
+```
+
+Restart J.A.R.V.I.S. after changing the setting. If the named device is not
+available, J.A.R.V.I.S. logs a warning and safely falls back to the Windows
+default microphone.
+
 ## Home Assistant
 
 Create a long-lived access token and add:
