@@ -84,7 +84,10 @@ light during the current session.
 
 ## Process cleanup
 
-Add only disposable user applications to `cleanup_allowlist`:
+Open **Processes** in the dashboard and approve only the user applications that
+J.A.R.V.I.S. may close. The choice is saved to `cleanup_allowlist`; protected
+Windows, security, shell, audio, and J.A.R.V.I.S. host processes cannot be
+added. You can also edit the list manually:
 
 ```json
 {
@@ -92,7 +95,10 @@ Add only disposable user applications to `cleanup_allowlist`:
 }
 ```
 
-System and unknown processes are never killed automatically.
+System and unknown processes are never killed automatically. After approval,
+say “Jarvis, clean unnecessary processes” or use **Clean approved** in the
+dashboard. J.A.R.V.I.S. audits fresh running processes, gracefully terminates
+matching current-user instances, and reports the result.
 
 ## Installation and startup
 
@@ -119,8 +125,8 @@ The dashboard provides:
 - Windows startup and microphone-enhancement status.
 
 Keyboard shortcuts: `Ctrl+L` focuses the command bar, `Ctrl+K` opens application
-search, and `F5` refreshes the installed-app catalog. Closing the dashboard does
-not stop the background voice listener.
+search, `Ctrl+P` opens process cleanup, and `F5` refreshes the installed-app
+catalog. Closing the dashboard does not stop the background voice listener.
 
 The assistant starts after user sign-in, when Windows permits microphone access.
 It is silent by default. To enable TTS, add `JARVIS_TTS=1` to `.env`.
@@ -136,6 +142,7 @@ py .\main.py --remove-startup
 - “Jarvis, open Settings.”
 - “Jarvis, run a system audit.”
 - “Jarvis, clean background processes.”
+- “Jarvis, audit and clean unnecessary processes.”
 - “Jarvis, lock my computer.”
 - “Jarvis, turn on the desk light.”
 - “Jarvis, activate movie mode.”

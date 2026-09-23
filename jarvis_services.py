@@ -70,6 +70,14 @@ def load_config() -> dict[str, Any]:
     return defaults
 
 
+def save_config(config: dict[str, Any]) -> None:
+    """Persist configuration atomically so the listener never reads partial JSON."""
+
+    temporary = CONFIG_FILE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(CONFIG_FILE)
+
+
 class SystemAuditor:
     """Collect a non-invasive system-health snapshot and save it locally."""
 
@@ -136,48 +144,210 @@ class SystemAuditor:
 
 
 class ProcessCleaner:
-    """Terminate only explicitly allowlisted, current-user processes."""
+    """Audit and terminate only explicitly approved current-user processes."""
+
+    PROTECTED_NAMES = {
+        "applicationframehost",
+        "audiodg",
+        "conhost",
+        "csrss",
+        "ctfmon",
+        "dwm",
+        "explorer",
+        "fontdrvhost",
+        "jarvis",
+        "lsass",
+        "msmpeng",
+        "python",
+        "pythonw",
+        "registry",
+        "runtimebroker",
+        "searchhost",
+        "securityhealthservice",
+        "services",
+        "shellexperiencehost",
+        "sihost",
+        "smss",
+        "spoolsv",
+        "startmenuexperiencehost",
+        "svchost",
+        "system",
+        "taskhostw",
+        "wininit",
+        "winlogon",
+        "wudfhost",
+    }
 
     def __init__(self, allowlist: list[str]) -> None:
-        self.allowlist = {_normalise(Path(item).stem) for item in allowlist if item}
+        self.allowlist = self._normalise_allowlist(allowlist)
 
-    def clean(self) -> CommandResult:
-        if not self.allowlist:
-            return CommandResult(
-                True,
-                "No cleanup processes are allowlisted. Nothing was terminated.",
-            )
-        current_pid = os.getpid()
+    @staticmethod
+    def _normalise_allowlist(items: list[str]) -> set[str]:
+        return {_normalise(Path(str(item)).stem) for item in items if item}
+
+    def _reload_allowlist(self) -> set[str]:
+        configured = load_config().get("cleanup_allowlist", [])
+        self.allowlist = self._normalise_allowlist(
+            configured if isinstance(configured, list) else []
+        )
+        return self.allowlist
+
+    def _is_protected(self, normalised_name: str, pid: Optional[int] = None) -> bool:
+        protected_pids = {os.getpid()}
+        try:
+            protected_pids.add(os.getppid())
+        except OSError:
+            pass
+        return normalised_name in self.PROTECTED_NAMES or pid in protected_pids
+
+    def inventory(self) -> list[dict[str, Any]]:
+        """Group running current-user processes for the interactive cleanup UI."""
+
+        allowlist = self._reload_allowlist()
         current_user = getpass.getuser().casefold()
-        candidates = []
-        for proc in psutil.process_iter(["pid", "name", "username"]):
+        grouped: dict[str, dict[str, Any]] = {}
+        for proc in psutil.process_iter(
+            ["pid", "name", "username", "memory_info"]
+        ):
             try:
-                name = _normalise(Path(str(proc.info.get("name") or "")).stem)
+                display_name = str(proc.info.get("name") or "").strip()
+                normalised = _normalise(Path(display_name).stem)
                 username = str(proc.info.get("username") or "").casefold()
-                if (
-                    proc.pid != current_pid
-                    and name in self.allowlist
-                    and current_user in username
-                ):
-                    candidates.append(proc)
+                if not normalised or current_user not in username:
+                    continue
+                memory_info = proc.info.get("memory_info")
+                memory_mb = (
+                    float(memory_info.rss) / (1024**2) if memory_info else 0.0
+                )
+                item = grouped.setdefault(
+                    normalised,
+                    {
+                        "name": display_name,
+                        "normalized_name": normalised,
+                        "instances": 0,
+                        "memory_mb": 0.0,
+                        "approved": normalised in allowlist,
+                        "protected": False,
+                    },
+                )
+                item["instances"] += 1
+                item["memory_mb"] += memory_mb
+                item["protected"] = bool(item["protected"]) or self._is_protected(
+                    normalised, proc.pid
+                )
             except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
                 continue
-        terminated = []
-        denied = []
-        for proc in candidates:
-            try:
-                name = proc.name()
-                proc.terminate()
-                terminated.append(name)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error) as exc:
-                denied.append(str(exc))
-        message = (
-            f"Cleanup complete. Terminated {len(terminated)} allowlisted process"
-            f"{'es' if len(terminated) != 1 else ''}."
+        for item in grouped.values():
+            item["memory_mb"] = round(float(item["memory_mb"]), 1)
+            if item["protected"]:
+                item["approved"] = False
+        return sorted(
+            grouped.values(),
+            key=lambda item: (
+                not bool(item["approved"]),
+                -float(item["memory_mb"]),
+                str(item["name"]).casefold(),
+            ),
         )
-        if denied:
-            message += f" {len(denied)} could not be terminated."
-        return CommandResult(True, message, {"terminated": terminated, "errors": denied})
+
+    def set_approved(self, process_name: str, approved: bool) -> CommandResult:
+        """Persist one process-name decision for later voice-triggered cleanup."""
+
+        normalised = _normalise(Path(process_name).stem)
+        if not normalised:
+            return CommandResult(True, "That process name is invalid.")
+        if self._is_protected(normalised):
+            return CommandResult(
+                True,
+                f"{process_name} is protected and cannot be added to cleanup.",
+            )
+        config = load_config()
+        existing = config.get("cleanup_allowlist", [])
+        values = {
+            _normalise(Path(str(item)).stem): str(item)
+            for item in existing
+            if item
+        } if isinstance(existing, list) else {}
+        if approved:
+            values[normalised] = process_name
+        else:
+            values.pop(normalised, None)
+        config["cleanup_allowlist"] = sorted(values.values(), key=str.casefold)
+        try:
+            save_config(config)
+        except OSError as exc:
+            return CommandResult(True, f"Could not update cleanup approval: {exc}")
+        self._reload_allowlist()
+        action = "approved for" if approved else "removed from"
+        return CommandResult(True, f"{process_name} was {action} cleanup.")
+
+    def clean(self) -> CommandResult:
+        allowlist = self._reload_allowlist()
+        if not allowlist:
+            return CommandResult(
+                True,
+                "Cleanup audit complete. No processes are approved, so nothing was terminated.",
+                {"audited": 0, "terminated": [], "errors": [], "estimated_reclaimed_mb": 0.0},
+            )
+        current_user = getpass.getuser().casefold()
+        candidates: list[tuple[psutil.Process, str, float]] = []
+        for proc in psutil.process_iter(
+            ["pid", "name", "username", "memory_info"]
+        ):
+            try:
+                display_name = str(proc.info.get("name") or "")
+                name = _normalise(Path(display_name).stem)
+                username = str(proc.info.get("username") or "").casefold()
+                if (
+                    name in allowlist
+                    and current_user in username
+                    and not self._is_protected(name, proc.pid)
+                ):
+                    memory_info = proc.info.get("memory_info")
+                    memory_mb = (
+                        float(memory_info.rss) / (1024**2) if memory_info else 0.0
+                    )
+                    candidates.append((proc, display_name, memory_mb))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+
+        requested: list[psutil.Process] = []
+        process_details: dict[int, tuple[str, float]] = {}
+        errors: list[str] = []
+        for proc, name, memory_mb in candidates:
+            try:
+                proc.terminate()
+                requested.append(proc)
+                process_details[proc.pid] = (name, memory_mb)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error) as exc:
+                errors.append(f"{name}: {exc}")
+
+        gone, alive = psutil.wait_procs(requested, timeout=3)
+        terminated = [process_details[proc.pid][0] for proc in gone]
+        reclaimed = round(sum(process_details[proc.pid][1] for proc in gone), 1)
+        for proc in alive:
+            name = process_details[proc.pid][0]
+            errors.append(f"{name}: did not exit after a graceful terminate request")
+
+        message = (
+            f"Cleanup audit complete. Terminated {len(terminated)} approved process"
+            f"{'es' if len(terminated) != 1 else ''}"
+            f" and released approximately {reclaimed:.0f} megabytes."
+        )
+        if not candidates:
+            message = "Cleanup audit complete. No approved processes are currently running."
+        if errors:
+            message += f" {len(errors)} could not be terminated safely."
+        return CommandResult(
+            True,
+            message,
+            {
+                "audited": len(candidates),
+                "terminated": terminated,
+                "errors": errors,
+                "estimated_reclaimed_mb": reclaimed,
+            },
+        )
 
 
 class WindowsSecurity:
@@ -420,6 +590,14 @@ class JarvisAutomation:
 
     def handle(self, text: str) -> CommandResult:
         command = _normalise(text)
+        cleanup_command = bool(
+            re.search(
+                r"\b(?:clean|clear|close|delete|remove|terminate) "
+                r"(?:(?:the|my) )?(?:unnecessary |unneeded |background )?processes\b",
+                command,
+            )
+            or command in {"process cleanup", "free up memory"}
+        )
         audit_command = bool(
             re.search(
                 r"\b(?:system audit|audit system|system health|system status)\b",
@@ -430,9 +608,17 @@ class JarvisAutomation:
                 command,
             )
         )
+        if cleanup_command and re.search(r"\b(?:audit|check|scan)\b", command):
+            audit = self.auditor.run()
+            cleanup = self.cleaner.clean()
+            return CommandResult(
+                True,
+                f"{audit.message} {cleanup.message}",
+                {"audit": audit.data, "cleanup": cleanup.data},
+            )
         if audit_command:
             return self.auditor.run()
-        if re.search(r"\b(?:clean processes|process cleanup|clean background processes)\b", command):
+        if cleanup_command:
             return self.cleaner.clean()
         if re.fullmatch(r"(?:please )?(?:lock|secure) (?:my )?(?:computer|device|pc|windows)", command):
             return self.security.lock()

@@ -50,12 +50,15 @@ class JarvisDesktopApp:
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.apps: dict[str, str] = {}
         self.filtered_apps: list[str] = []
+        self.process_items: list[dict[str, Any]] = []
+        self.process_cleaner = backend.JarvisAutomation().cleaner
         self.active_view = "overview"
         self.engine_state = "offline"
         self.voice_state = "idle"
         self.animation_phase = 0.0
         self._last_log_signature = ""
         self._busy = False
+        self._process_busy = False
 
         self.colors = Palette()
         self._configure_window()
@@ -124,6 +127,7 @@ class JarvisDesktopApp:
         self.views: dict[str, tk.Frame] = {}
         self._build_overview()
         self._build_applications()
+        self._build_processes()
         self._build_activity()
         self._build_settings()
 
@@ -144,6 +148,7 @@ class JarvisDesktopApp:
         items = [
             ("overview", "⌂  Overview"),
             ("applications", "▦  Applications"),
+            ("processes", "◎  Processes"),
             ("activity", "≋  Activity"),
             ("settings", "⚙  Settings"),
         ]
@@ -287,6 +292,10 @@ class JarvisDesktopApp:
         tk.Label(audit_top, text="LAST RESPONSE", bg=self.colors.SURFACE, fg=self.colors.CYAN, font=self.font_label).pack(side="left")
         self.audit_button = self._button(audit_top, "RUN AUDIT", self._run_audit, compact=True)
         self.audit_button.pack(side="right")
+        self.clean_button = self._button(
+            audit_top, "CLEAN", self._clean_approved, compact=True
+        )
+        self.clean_button.pack(side="right", padx=(0, 7))
         self.response_label = tk.Label(
             audit,
             text="Standing by. Your commands stay on this device unless intelligence is requested.",
@@ -339,6 +348,85 @@ class JarvisDesktopApp:
         self.apps_grid.bind("<Configure>", lambda _event: self.apps_canvas.configure(scrollregion=self.apps_canvas.bbox("all")))
         self.apps_canvas.bind("<Configure>", lambda event: self.apps_canvas.itemconfigure(self.apps_window, width=event.width))
         self.apps_canvas.bind_all("<MouseWheel>", self._scroll_apps)
+
+    def _build_processes(self) -> None:
+        view = tk.Frame(self.view_host, bg=self.colors.VOID)
+        self.views["processes"] = view
+        view.grid_rowconfigure(1, weight=1)
+        view.grid_columnconfigure(0, weight=1)
+
+        tools = self._panel(view)
+        tools.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        copy = tk.Frame(tools, bg=self.colors.SURFACE)
+        copy.pack(side="left", fill="x", expand=True, padx=18, pady=12)
+        tk.Label(
+            copy,
+            text="APPROVED PROCESS CLEANUP",
+            bg=self.colors.SURFACE,
+            fg=self.colors.CYAN,
+            font=self.font_label,
+        ).pack(anchor="w")
+        tk.Label(
+            copy,
+            text="Approve user apps once. Then say “Jarvis, clean unnecessary processes.”",
+            bg=self.colors.SURFACE,
+            fg=self.colors.MUTED,
+            font=self.font_body,
+        ).pack(anchor="w", pady=(3, 0))
+        self.process_count_label = tk.Label(
+            tools,
+            text="SCANNING",
+            bg=self.colors.SURFACE,
+            fg=self.colors.MUTED,
+            font=self.font_label,
+        )
+        self.process_count_label.pack(side="right", padx=12)
+        self.process_clean_button = self._button(
+            tools, "CLEAN APPROVED", self._clean_approved, accent=True, compact=True
+        )
+        self.process_clean_button.pack(side="right", padx=(0, 8), pady=10)
+        self.process_refresh_button = self._button(
+            tools, "REFRESH", self._refresh_processes, compact=True
+        )
+        self.process_refresh_button.pack(side="right", padx=(0, 8), pady=10)
+
+        container = self._panel(view)
+        container.grid(row=1, column=0, sticky="nsew")
+        self.process_canvas = tk.Canvas(
+            container, bg=self.colors.SURFACE, highlightthickness=0
+        )
+        scrollbar = tk.Scrollbar(
+            container,
+            orient="vertical",
+            command=self.process_canvas.yview,
+            troughcolor=self.colors.SURFACE,
+            bg=self.colors.LINE,
+        )
+        self.process_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.process_canvas.pack(side="left", fill="both", expand=True)
+        self.process_grid = tk.Frame(self.process_canvas, bg=self.colors.SURFACE)
+        self.process_window = self.process_canvas.create_window(
+            (0, 0), window=self.process_grid, anchor="nw"
+        )
+        self.process_grid.bind(
+            "<Configure>",
+            lambda _event: self.process_canvas.configure(
+                scrollregion=self.process_canvas.bbox("all")
+            ),
+        )
+        self.process_canvas.bind(
+            "<Configure>",
+            lambda event: self.process_canvas.itemconfigure(
+                self.process_window, width=event.width
+            ),
+        )
+        self.process_canvas.bind(
+            "<MouseWheel>",
+            lambda event: self.process_canvas.yview_scroll(
+                int(-event.delta / 120), "units"
+            ),
+        )
 
     def _build_activity(self) -> None:
         view = tk.Frame(self.view_host, bg=self.colors.VOID)
@@ -408,6 +496,7 @@ class JarvisDesktopApp:
         titles = {
             "overview": ("SYSTEM / OVERVIEW", self._greeting()),
             "applications": ("LOCAL / APPLICATIONS", "Installed applications"),
+            "processes": ("SYSTEM / PROCESSES", "Cleanup approvals"),
             "activity": ("SYSTEM / ACTIVITY", "Operational timeline"),
             "settings": ("SYSTEM / SETTINGS", "Assistant configuration"),
         }
@@ -424,6 +513,8 @@ class JarvisDesktopApp:
             self._refresh_activity()
         if name == "applications":
             self.root.after(60, self.search_entry.focus_set)
+        if name == "processes":
+            self._refresh_processes()
 
     def _greeting(self) -> str:
         hour = datetime.now().hour
@@ -432,12 +523,22 @@ class JarvisDesktopApp:
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-k>", self._focus_search)
-        self.root.bind("<Control-l>", lambda _event: self.command_entry.focus_set())
+        self.root.bind("<Control-l>", self._focus_command)
+        self.root.bind("<Control-p>", self._focus_processes)
         self.root.bind("<F5>", lambda _event: self._refresh_apps())
 
     def _focus_search(self, _event: tk.Event[Any]) -> str:
         self._show_view("applications")
         self.search_entry.focus_set()
+        return "break"
+
+    def _focus_command(self, _event: tk.Event[Any]) -> str:
+        self._show_view("overview")
+        self.command_entry.focus_set()
+        return "break"
+
+    def _focus_processes(self, _event: tk.Event[Any]) -> str:
+        self._show_view("processes")
         return "break"
 
     def _run_worker(self, function: Any, *args: Any) -> None:
@@ -521,6 +622,131 @@ class JarvisDesktopApp:
     def _scroll_apps(self, event: tk.Event[Any]) -> None:
         if self.active_view == "applications":
             self.apps_canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _refresh_processes(self) -> None:
+        if self._process_busy:
+            return
+        self._process_busy = True
+        self.process_refresh_button.configure(state="disabled", text="SCANNING")
+        self._run_worker(self._process_inventory_worker)
+
+    def _process_inventory_worker(self) -> None:
+        self.events.put(("processes", self.process_cleaner.inventory()))
+
+    def _render_processes(self) -> None:
+        for child in self.process_grid.winfo_children():
+            child.destroy()
+        approved_count = sum(
+            1 for item in self.process_items if bool(item.get("approved"))
+        )
+        self.process_count_label.configure(
+            text=f"{approved_count} APPROVED • {len(self.process_items)} RUNNING"
+        )
+        for row, item in enumerate(self.process_items[:120]):
+            protected = bool(item.get("protected"))
+            approved = bool(item.get("approved"))
+            card = tk.Frame(
+                self.process_grid,
+                bg=self.colors.SURFACE_2,
+                highlightbackground=(
+                    self.colors.CYAN_SOFT if approved else self.colors.LINE
+                ),
+                highlightthickness=1,
+            )
+            card.grid(row=row, column=0, sticky="ew", padx=10, pady=5)
+            self.process_grid.grid_columnconfigure(0, weight=1)
+
+            mark = "✓" if approved else "◆" if protected else "○"
+            mark_color = (
+                self.colors.MINT
+                if approved
+                else self.colors.DIM
+                if protected
+                else self.colors.CYAN
+            )
+            tk.Label(
+                card,
+                text=mark,
+                width=3,
+                bg=self.colors.SURFACE_2,
+                fg=mark_color,
+                font=(self.ui_family, 14, "bold"),
+            ).pack(side="left", padx=(10, 4), pady=11)
+            identity = tk.Frame(card, bg=self.colors.SURFACE_2)
+            identity.pack(side="left", fill="x", expand=True, pady=9)
+            tk.Label(
+                identity,
+                text=str(item.get("name") or "Unknown process"),
+                bg=self.colors.SURFACE_2,
+                fg=self.colors.TEXT,
+                font=self.font_body,
+                anchor="w",
+            ).pack(anchor="w")
+            instances = int(item.get("instances") or 0)
+            tk.Label(
+                identity,
+                text=f"{instances} instance{'s' if instances != 1 else ''}",
+                bg=self.colors.SURFACE_2,
+                fg=self.colors.MUTED,
+                font=self.font_small,
+                anchor="w",
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                text=f"{float(item.get('memory_mb') or 0.0):.1f} MB",
+                width=12,
+                bg=self.colors.SURFACE_2,
+                fg=self.colors.AMBER if approved else self.colors.MUTED,
+                font=self.font_mono,
+            ).pack(side="left", padx=8)
+            if protected:
+                tk.Label(
+                    card,
+                    text="PROTECTED",
+                    width=13,
+                    bg=self.colors.SURFACE_3,
+                    fg=self.colors.DIM,
+                    font=self.font_label,
+                    padx=8,
+                    pady=9,
+                ).pack(side="right", padx=10, pady=9)
+            else:
+                action = "REMOVE" if approved else "APPROVE"
+                self._button(
+                    card,
+                    action,
+                    lambda name=str(item.get("name") or ""), value=not approved: self._toggle_process_approval(
+                        name, value
+                    ),
+                    accent=not approved,
+                    compact=True,
+                ).pack(side="right", padx=10, pady=9)
+
+    def _toggle_process_approval(self, process_name: str, approved: bool) -> None:
+        if self._process_busy:
+            return
+        self._process_busy = True
+        self._run_worker(self._process_approval_worker, process_name, approved)
+
+    def _process_approval_worker(self, process_name: str, approved: bool) -> None:
+        result = self.process_cleaner.set_approved(process_name, approved)
+        self.events.put(("response", (result.message, False)))
+        self.events.put(("processes", self.process_cleaner.inventory()))
+
+    def _clean_approved(self) -> None:
+        if self._process_busy:
+            return
+        self._process_busy = True
+        self.clean_button.configure(state="disabled", text="CLEANING")
+        self.process_clean_button.configure(state="disabled", text="CLEANING")
+        self._run_worker(self._cleanup_worker)
+
+    def _cleanup_worker(self) -> None:
+        self.events.put(("voice", "thinking"))
+        result = self.process_cleaner.clean()
+        self.events.put(("response", (result.message, False)))
+        self.backend.speak(result.message)
+        self.events.put(("cleanup_done", self.process_cleaner.inventory()))
 
     def _launch_named_app(self, name: str) -> None:
         if name not in self.apps:
@@ -771,6 +997,15 @@ class JarvisDesktopApp:
                 self._busy = False
                 self.refresh_apps_button.configure(state="normal", text="REFRESH CATALOG")
                 self._set_response(f"Application catalog ready. {len(self.apps)} local apps available.")
+            elif kind == "processes":
+                self.process_items = list(payload)
+                self._process_busy = False
+                self.process_refresh_button.configure(state="normal", text="REFRESH")
+                self.process_clean_button.configure(
+                    state="normal", text="CLEAN APPROVED"
+                )
+                self.clean_button.configure(state="normal", text="CLEAN")
+                self._render_processes()
             elif kind == "busy":
                 self._busy = True
                 self.refresh_apps_button.configure(state="disabled", text="SCANNING")
@@ -787,6 +1022,18 @@ class JarvisDesktopApp:
             elif kind == "audit_done":
                 self._busy = False
                 self.audit_button.configure(state="normal", text="RUN AUDIT")
+            elif kind == "cleanup_done":
+                self.process_items = list(payload)
+                self._process_busy = False
+                self.voice_state = (
+                    "listening" if self.engine_state == "online" else "idle"
+                )
+                self.clean_button.configure(state="normal", text="CLEAN")
+                self.process_clean_button.configure(
+                    state="normal", text="CLEAN APPROVED"
+                )
+                self.process_refresh_button.configure(state="normal", text="REFRESH")
+                self._render_processes()
             elif kind == "engine":
                 self.engine_state = str(payload)
                 self.voice_state = "listening" if payload == "online" else "idle"
@@ -796,6 +1043,12 @@ class JarvisDesktopApp:
                 self.send_button.configure(state="normal", text="EXECUTE")
                 self.audit_button.configure(state="normal", text="RUN AUDIT")
                 self.refresh_apps_button.configure(state="normal", text="REFRESH CATALOG")
+                self._process_busy = False
+                self.clean_button.configure(state="normal", text="CLEAN")
+                self.process_clean_button.configure(
+                    state="normal", text="CLEAN APPROVED"
+                )
+                self.process_refresh_button.configure(state="normal", text="REFRESH")
                 self._set_response(str(payload), error=True)
         self.root.after(80, self._drain_events)
 

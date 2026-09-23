@@ -139,3 +139,55 @@ refresh apps:  ready -> scanning -> ready|error
 - Contrast: cyan/white text on near-black surfaces; all muted text remains readable.
 - Motion: animation is optional and honors a reduced-motion configuration flag.
 - Runtime files (`jarvis.log`, `app_cache.json`) remain uncommitted.
+
+---
+
+## Interaction & Safe Process Cleanup Addendum
+
+### Multi-Path Trade-Off Matrix
+
+| Path | Description | Safety | Interaction | Maintainability | Automation | Total |
+|---|---|---:|---:|---:|---:|---:|
+| A — Blind cleanup | Infer “unnecessary” from CPU/RAM and terminate automatically | 1 | 2 | 2 | 5 | 10 |
+| B — Approved cleanup | Interactive current-user inventory, persistent allowlist, protected core processes, voice-triggered execution | 5 | 5 | 5 | 4 | **19** |
+| C — Confirmation every run | Voice asks for per-process confirmation before every cleanup | 4 | 3 | 3 | 2 | 12 |
+
+Decision: **Path B**. “Unnecessary” is subjective; a persistent user-approved list makes the spoken cleanup command deterministic while preserving full automation after initial setup.
+
+### Defensive Threat Model — Exactly Three Failure Scenarios
+
+1. **Critical process is accidentally allowlisted** — enforce a code-owned protected-name set, current-process/parent exclusions, and current-user ownership before termination.
+2. **Process exits or changes between inventory and cleanup** — resolve fresh `psutil.Process` objects at execution time and tolerate `NoSuchProcess`/`AccessDenied` per item.
+3. **UI and background listener update/read configuration simultaneously** — write JSON atomically through a temporary sibling file and reload the cleanup allowlist immediately before each voice-triggered cleanup.
+
+### Split-Brain Review
+
+- **Architect:** add a Processes view, grouped memory/instance inventory, persistent approve/remove actions, and Overview quick cleanup.
+- **SRE Breaker:** never kill by PID remembered from the UI; never include Windows shell, security, audio, driver, assistant, or Python host processes; terminate gracefully and report failures.
+- **Synthesizer:** the user approves a process name once, then “clean unnecessary processes” audits and terminates matching current-user instances automatically with visible results.
+
+### Interface Contracts
+
+```text
+ProcessCleaner.inventory() -> list[{
+  name: str,
+  normalized_name: str,
+  instances: int,
+  memory_mb: float,
+  approved: bool,
+  protected: bool
+}]
+
+ProcessCleaner.set_approved(process_name: str, approved: bool) -> CommandResult
+ProcessCleaner.clean() -> CommandResult {
+  data: {audited, terminated, errors, estimated_reclaimed_mb}
+}
+```
+
+Lifecycle:
+
+```text
+inventory refresh -> grouped current-user processes -> approve/remove -> atomic config save
+voice cleanup -> reload allowlist -> audit fresh processes -> protected/user checks
+              -> graceful terminate -> bounded wait -> report -> UI refresh
+```
