@@ -1320,6 +1320,11 @@ def _startup_greeting() -> str:
 def main() -> None:
     """Run the continuous VoiceLaunch listen/parse/execute loop."""
 
+    if "--ui" in sys.argv:
+        from jarvis_ui import run_ui
+
+        run_ui(sys.modules[__name__])
+        return
     if "--install-startup" in sys.argv:
         success, message = install_startup()
         print(("Success: " if success else "Error: ") + message)

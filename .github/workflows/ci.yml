@@ -20,4 +20,4 @@ jobs:
           python-version: "3.14"
 
       - name: Compile Python sources
-        run: python -m py_compile main.py jarvis_services.py
+        run: python -m py_compile main.py jarvis_ui.py jarvis_services.py

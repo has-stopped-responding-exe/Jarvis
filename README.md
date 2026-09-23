@@ -102,6 +102,26 @@ py .\main.py --install-startup
 py .\main.py
 ```
 
+## Desktop command interface
+
+Open the native J.A.R.V.I.S. dashboard:
+
+```powershell
+py .\main.py --ui
+```
+
+The dashboard provides:
+
+- live voice-engine status and Start/Stop controls;
+- an animated listening core and typed command bar;
+- searchable access to every locally discovered application;
+- system CPU, memory, disk, audit, and activity views;
+- Windows startup and microphone-enhancement status.
+
+Keyboard shortcuts: `Ctrl+L` focuses the command bar, `Ctrl+K` opens application
+search, and `F5` refreshes the installed-app catalog. Closing the dashboard does
+not stop the background voice listener.
+
 The assistant starts after user sign-in, when Windows permits microphone access.
 It is silent by default. To enable TTS, add `JARVIS_TTS=1` to `.env`.
 

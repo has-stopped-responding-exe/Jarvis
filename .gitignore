@@ -5,3 +5,4 @@ app_cache.json
 voicelaunch.log
 jarvis.log
 audits/
+.vg-canvas/qa/
