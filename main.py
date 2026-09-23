@@ -561,10 +561,74 @@ def adjust_system_volume(
         return None
 
 
+def _select_google_transcript(
+    recognition: object, app_list: Optional[AppList]
+) -> Optional[str]:
+    """Prefer Google's alternative that best matches an installed app.
+
+    Google often returns several plausible transcripts for short brand names.
+    Its first result is not always the useful one (for example, "drive flight"
+    instead of "Riot Client"). Ordinary conversation still uses the first
+    result; app commands are ranked against the live installed-app catalogue.
+    """
+
+    if isinstance(recognition, str):
+        return recognition.strip() or None
+    if not isinstance(recognition, dict):
+        return None
+    raw_alternatives = recognition.get("alternative", [])
+    if not isinstance(raw_alternatives, list):
+        return None
+
+    alternatives: list[tuple[str, float, int]] = []
+    for index, item in enumerate(raw_alternatives):
+        if not isinstance(item, dict):
+            continue
+        transcript = str(item.get("transcript", "")).strip()
+        if not transcript:
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        alternatives.append((transcript, confidence, index))
+    if not alternatives:
+        return None
+
+    first = alternatives[0][0]
+    if not app_list:
+        return first
+
+    ranked: list[tuple[float, float, int, str]] = []
+    for transcript, confidence, index in alternatives:
+        normalised = _normalise(_strip_wake_word(transcript))
+        if not re.search(
+            r"\b(?:open|launch|start|run|close|quit|switch)\b", normalised
+        ):
+            continue
+        _, target = parse_intent(normalised, app_list)
+        candidate = match_app(target, app_list, minimum_score=0.0)
+        app_score = candidate.scores[0][1] if candidate.scores else 0.0
+        ranked.append((app_score, confidence, -index, transcript))
+
+    if not ranked:
+        return first
+    selected = max(ranked)[3]
+    if len(alternatives) > 1:
+        print(
+            "[audio] Google alternatives: "
+            + " | ".join(item[0] for item in alternatives[:5])
+        )
+        if selected != first:
+            print(f"[audio] Selected installed-app interpretation: {selected}")
+    return selected
+
+
 def listen_for_command(
     recognizer: Optional["sr.Recognizer"] = None,
     *,
     audio_source: Optional[object] = None,
+    app_list: Optional[AppList] = None,
     timeout: Optional[float] = None,
     phrase_time_limit: float = 7.0,
 ) -> Optional[str]:
@@ -584,6 +648,7 @@ def listen_for_command(
                 return listen_for_command(
                     recognizer,
                     audio_source=source,
+                    app_list=app_list,
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit,
                 )
@@ -605,15 +670,21 @@ def listen_for_command(
                 source, timeout=timeout, phrase_time_limit=phrase_time_limit
             )
         print("[audio] Recognizing speech...")
-        text = recognizer.recognize_google(
-            audio, language=RECOGNITION_LANGUAGE
-        ).strip()
+        recognition = recognizer.recognize_google(
+            audio, language=RECOGNITION_LANGUAGE, show_all=True
+        )
+        text = _select_google_transcript(recognition, app_list)
+        if not text:
+            raise sr.UnknownValueError()
         print(f"[heard] {text}")
         return text
     except sr.WaitTimeoutError:
         print("[audio] No speech detected before timeout.")
     except sr.UnknownValueError:
-        speak("I couldn't understand that. Please try again.")
+        # Do not speak here: the microphone can hear that response and create
+        # a self-sustaining recognition/TTS feedback loop. A real command
+        # failure still receives spoken feedback in the main loop.
+        print("[audio] Speech was not understood; listening again.")
     except sr.RequestError as exc:
         speak("The speech recognition service is unavailable right now.")
         print(f"[audio] Google speech recognition error: {exc}")
@@ -1125,7 +1196,9 @@ def main() -> None:
     print(f"[audio] Persistent {backend} microphone stream opened.")
 
     while True:
-        text = listen_for_command(recognizer, audio_source=audio_source)
+        text = listen_for_command(
+            recognizer, audio_source=audio_source, app_list=apps
+        )
         if not text:
             continue
         text = _strip_wake_word(text)
@@ -1209,12 +1282,38 @@ def main() -> None:
                 continue
         if selected is None:
             if explicit_app_action:
-                speak("That app isn't installed on this device.")
+                # A short brand name is easy for speech recognition to mangle.
+                # Give it one focused attempt before concluding it is absent.
+                speak("I couldn't match that. Please repeat only the application name.")
+                retry_text = listen_for_command(
+                    recognizer,
+                    audio_source=audio_source,
+                    app_list=apps,
+                    timeout=7,
+                    phrase_time_limit=5,
+                )
+                if retry_text:
+                    _, retry_target = parse_intent(
+                        _strip_wake_word(retry_text), apps
+                    )
+                    retry_result = match_app(retry_target, apps)
+                    print(f"[match] retry candidates={retry_result.scores}")
+                    if retry_result.alternatives:
+                        selected = _choose_alternative(
+                            retry_result.alternatives,
+                            recognizer,
+                            audio_source=audio_source,
+                        )
+                    else:
+                        selected = retry_result.selected
+                if selected is None:
+                    speak("That app isn't installed on this device.")
+                    continue
             else:
                 answer = jarvis.answer(text)
                 print(f"[intelligence] {answer.message}")
                 speak(answer.message)
-            continue
+                continue
 
         app_info = apps[selected]
         print(f"[match] selected={selected!r}, launch_value={app_info!r}")
