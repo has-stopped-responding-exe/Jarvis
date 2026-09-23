@@ -130,6 +130,10 @@ catalog. Closing the dashboard does not stop the background voice listener.
 
 The assistant starts after user sign-in, when Windows permits microphone access.
 It is silent by default. To enable TTS, add `JARVIS_TTS=1` to `.env`.
+On Windows, J.A.R.V.I.S. prefers the installed Microsoft David voice at a calm
+175 words per minute. Override it with `JARVIS_VOICE` and `JARVIS_TTS_RATE`.
+Conversational replies retain session context and are deliberately concise so
+spoken answers remain natural.
 
 Disable startup:
 

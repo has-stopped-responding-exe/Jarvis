@@ -499,7 +499,13 @@ class IntelligenceClient:
     """Provider-neutral OpenAI-compatible chat client with session memory."""
 
     SYSTEM_PROMPT = (
-        "You are J.A.R.V.I.S., a precise, concise, subtly witty AI butler. "
+        "You are J.A.R.V.I.S., a calm, highly capable personal AI butler. "
+        "Speak naturally in polished conversational English with understated wit. "
+        "Be warm but never chatty or theatrical. Address the user as sir occasionally, "
+        "not in every reply. Keep ordinary replies under 60 words and 2 to 4 sentences "
+        "unless the user explicitly requests detail. Ask one short follow-up when needed. "
+        "Never use markdown, bullet lists, stage directions, role-play narration, emojis, "
+        "signatures, or describe your own tone or gestures. "
         "Never claim an automation happened unless the local automation layer confirms it. "
         "Do not provide instructions for bypassing device authentication or security."
     )
@@ -541,6 +547,27 @@ class IntelligenceClient:
     def configured(self) -> bool:
         return self.client is not None and bool(self.model)
 
+    @staticmethod
+    def _clean_reply(message: str) -> str:
+        """Remove model artifacts that sound unnatural when read by TTS."""
+
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", str(message), flags=re.I)
+        cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)
+        cleaned = re.sub(r"\[(?:[^\]]{1,240})\]", "", cleaned)
+        cleaned = re.sub(r"^\s*(?:[-*•]+|#{1,6})\s*", "", cleaned, flags=re.M)
+        cleaned = re.sub(
+            r"^\s*(?:J\.?A\.?R\.?V\.?I\.?S\.?\s*:|—?\s*J\.?A\.?R\.?V\.?I\.?S\.?)\s*",
+            "",
+            cleaned,
+            flags=re.I | re.M,
+        )
+        cleaned = re.sub(r"[*_`>]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > 1200:
+            boundary = cleaned.rfind(". ", 0, 1200)
+            cleaned = cleaned[: boundary + 1 if boundary > 600 else 1200].rstrip()
+        return cleaned or "I have no useful response at the moment, sir."
+
     def ask(self, prompt: str) -> CommandResult:
         if not self.configured:
             return CommandResult(
@@ -556,25 +583,31 @@ class IntelligenceClient:
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     *self.history,
                 ],
-                "max_tokens": 500,
+                "max_tokens": 180,
             }
             if self.provider == "nvidia":
                 request.update(
                     {
-                        "temperature": 1.0,
-                        "top_p": 0.95,
+                        "temperature": 0.65,
+                        "top_p": 0.9,
                         "extra_body": {
                             "chat_template_kwargs": {"enable_thinking": False}
                         },
                     }
                 )
             completion = self.client.chat.completions.create(**request)
-            message = completion.choices[0].message.content or "No response returned."
+            message = self._clean_reply(
+                completion.choices[0].message.content or "No response returned."
+            )
             self.history.append({"role": "assistant", "content": message})
             self.history = self.history[-20:]
             return CommandResult(True, message, {"provider": self.provider, "model": self.model})
         except Exception as exc:
-            return CommandResult(True, f"Intelligence provider error: {exc}")
+            return CommandResult(
+                True,
+                "My intelligence service is temporarily unavailable, sir. Local controls remain operational.",
+                {"error": str(exc)},
+            )
 
 
 class JarvisAutomation:

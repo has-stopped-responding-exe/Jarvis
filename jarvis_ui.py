@@ -51,7 +51,8 @@ class JarvisDesktopApp:
         self.apps: dict[str, str] = {}
         self.filtered_apps: list[str] = []
         self.process_items: list[dict[str, Any]] = []
-        self.process_cleaner = backend.JarvisAutomation().cleaner
+        self.jarvis = backend.JarvisAutomation()
+        self.process_cleaner = self.jarvis.cleaner
         self.active_view = "overview"
         self.engine_state = "offline"
         self.voice_state = "idle"
@@ -780,8 +781,7 @@ class JarvisDesktopApp:
 
     def _command_worker(self, text: str) -> None:
         self.events.put(("voice", "thinking"))
-        jarvis = self.backend.JarvisAutomation()
-        automation = jarvis.handle(text)
+        automation = self.jarvis.handle(text)
         if automation.handled:
             message = automation.message
             self.events.put(("response", (message, False)))
@@ -810,7 +810,7 @@ class JarvisDesktopApp:
             else:
                 self.events.put(("response", ("That application is not installed on this device.", True)))
         else:
-            answer = jarvis.answer(text)
+            answer = self.jarvis.answer(text)
             self.events.put(("response", (answer.message, False)))
             self.backend.speak(answer.message)
         self.events.put(("command_done", None))
@@ -822,7 +822,7 @@ class JarvisDesktopApp:
             self._run_worker(self._audit_worker)
 
     def _audit_worker(self) -> None:
-        result = self.backend.JarvisAutomation().auditor.run()
+        result = self.jarvis.auditor.run()
         self.events.put(("response", (result.message, not result.handled)))
         self.events.put(("audit_done", None))
 

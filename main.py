@@ -15,6 +15,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from array import array
 from dataclasses import dataclass
@@ -74,7 +75,11 @@ APP_RECOGNITION_LANGUAGE = os.environ.get(
 MICROPHONE_PREFERENCE = os.environ.get("JARVIS_MICROPHONE", "").strip()
 ENHANCE_MIC_AUDIO = os.environ.get("JARVIS_ENHANCE_MIC", "1") == "1"
 TTS_VOLUME = 1.0  # pyttsx3 range: 0.0 to 1.0
-TTS_RATE = 190
+try:
+    TTS_RATE = max(120, min(240, int(os.environ.get("JARVIS_TTS_RATE", "175"))))
+except ValueError:
+    TTS_RATE = 175
+TTS_VOICE = os.environ.get("JARVIS_VOICE", "Microsoft David").strip()
 TTS_ENABLED = os.environ.get("JARVIS_TTS", "0") == "1"
 MINIMUM_SYSTEM_VOLUME = 0.70
 LOG_FILE = Path(__file__).resolve().with_name("jarvis.log")
@@ -82,6 +87,7 @@ STARTUP_SCRIPT_NAME = "JARVIS.vbs"
 
 AppList = Dict[str, str]
 _tts_engine = None
+_tts_lock = threading.Lock()
 _background_log = None
 _instance_mutex = None
 
@@ -561,28 +567,88 @@ def scan_installed_apps(force_refresh: bool = False) -> AppList:
     return apps
 
 
+def _prepare_spoken_text(text: str, limit: int = 700) -> str:
+    """Turn model/UI text into concise speech without reading markup aloud."""
+
+    spoken = str(text).strip()
+    spoken = re.sub(r"```[\s\S]*?```", "", spoken)
+    spoken = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", spoken)
+    spoken = re.sub(r"https?://\S+", "", spoken)
+    spoken = re.sub(r"^\s{0,3}#{1,6}\s*", "", spoken, flags=re.MULTILINE)
+    spoken = re.sub(r"[*_`>]", "", spoken)
+    spoken = re.sub(r"\[(?:[^\]]{1,180})\]", "", spoken)
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+    if len(spoken) > limit:
+        boundary = max(
+            spoken.rfind(". ", 0, limit),
+            spoken.rfind("? ", 0, limit),
+            spoken.rfind("! ", 0, limit),
+        )
+        spoken = spoken[: boundary + 1 if boundary >= limit // 2 else limit].rstrip()
+    return spoken
+
+
+def _select_tts_voice(engine: object) -> None:
+    """Select the configured voice, preferring an installed adult male voice."""
+
+    try:
+        voices = list(engine.getProperty("voices"))  # type: ignore[attr-defined]
+        preference = TTS_VOICE.casefold()
+        selected = next(
+            (
+                voice
+                for voice in voices
+                if preference
+                and (
+                    preference in str(getattr(voice, "name", "")).casefold()
+                    or preference in str(getattr(voice, "id", "")).casefold()
+                )
+            ),
+            None,
+        )
+        if selected is None:
+            selected = next(
+                (
+                    voice
+                    for voice in voices
+                    if str(getattr(voice, "gender", "")).casefold() == "male"
+                ),
+                voices[0] if voices else None,
+            )
+        if selected is not None:
+            engine.setProperty("voice", selected.id)  # type: ignore[attr-defined]
+            print(f"[tts] Voice: {getattr(selected, 'name', selected.id)}")
+    except Exception as exc:
+        print(f"[tts] Could not select preferred voice: {exc}")
+
+
 def speak(text: str) -> None:
-    """Print feedback and speak it through the offline pyttsx3 engine."""
+    """Print feedback and speak a cleaned version through offline TTS."""
 
     global _tts_engine
     print(f"J.A.R.V.I.S.: {text}")
     if not TTS_ENABLED or pyttsx3 is None:
         return
-    try:
-        if _tts_engine is None:
-            _tts_engine = pyttsx3.init()
-            # Maximise VoiceLaunch itself without unexpectedly changing the
-            # user's system-wide Windows master volume.
-            _tts_engine.setProperty("volume", TTS_VOLUME)
-            _tts_engine.setProperty("rate", TTS_RATE)
-        _maximise_voice_session_volume()
-        _tts_engine.say(text)
-        _tts_engine.runAndWait()
-        # SAPI may create its Windows audio session only during first playback.
-        _maximise_voice_session_volume()
-    except Exception as exc:  # Audio drivers vary substantially by platform.
-        print(f"[tts] Speech output failed: {exc}")
-        _tts_engine = None
+    spoken = _prepare_spoken_text(text)
+    if not spoken:
+        return
+    with _tts_lock:
+        try:
+            if _tts_engine is None:
+                _tts_engine = pyttsx3.init()
+                # Maximise J.A.R.V.I.S. itself without changing the user's
+                # system-wide Windows master volume.
+                _select_tts_voice(_tts_engine)
+                _tts_engine.setProperty("volume", TTS_VOLUME)
+                _tts_engine.setProperty("rate", TTS_RATE)
+            _maximise_voice_session_volume()
+            _tts_engine.say(spoken)
+            _tts_engine.runAndWait()
+            # SAPI may create its Windows audio session only during first playback.
+            _maximise_voice_session_volume()
+        except Exception as exc:  # Audio drivers vary substantially by platform.
+            print(f"[tts] Speech output failed: {exc}")
+            _tts_engine = None
 
 
 def _maximise_voice_session_volume() -> None:
@@ -1378,7 +1444,9 @@ def main() -> None:
     recognizer.dynamic_energy_threshold = True
     recognizer.operation_timeout = 5
     print(f"[startup] Found {len(apps)} installed applications.")
-    print(f"[startup] {_startup_greeting()}")
+    greeting = _startup_greeting()
+    print(f"[startup] {greeting}")
+    speak(greeting)
 
     # Keep one microphone stream open for the entire session. Reopening the
     # PortAudio device for every short command added avoidable local latency.
